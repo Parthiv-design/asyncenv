@@ -2,7 +2,7 @@ from setuptools import setup, find_packages
 
 setup(
     name="asyncenv",
-    version="3.3.8",  # Increment version string tag to clear PyPI tracking cache caches
+    version="3.3.9",  # Increment version string tag to clear PyPI tracking cache caches
     author="Enterprise Engineering Group",
     description="Cooperative Task Slicing Architecture for Micro-Runtimes.",
     packages=find_packages(),
