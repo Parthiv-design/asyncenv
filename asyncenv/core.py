@@ -179,7 +179,7 @@ class TaskMetricsCollector:
     def print_report(self):
         print("\n📊 --- FRAMEWORK METRICS TELEMETRY REPORT ---")
         for tid, data in self.history.items():
-            if data["end"]: print(f"Task {tid}: Finished in {data['end'] - data['start']:.4f}s across {data['slices']} slices.")
+            if data["end"]: print(f"Task {tid}: Finished in {data['end'] -data['start']:.4f}s across {data['slices']} slices.")
 
 # =====================================================================
 # INTEGRATED SYSTEM ARCHITECTURES & OPERATIONS - PART 2
@@ -214,30 +214,87 @@ class TaskLoop:
         self._registry, self._is_running = [], False
         self.metrics_tracker, self.breaker, self.throttler = TaskMetricsCollector(), CircuitBreaker(), DynamicWorkThrottler()
         self.dag_resolver, self.snapshot_manager = TaskDependencyResolver(), StateSnapshotter()
+        self._task_display_order = []
+
     def add_task(self, task, priority=2):
         if not isinstance(task, Asyncenv): raise TypeError("Must inherit from Asyncenv.")
-        self._registry.append(task); self.metrics_tracker.log_start(task.task_id); self.snapshot_manager.capture_snapshot(task)
+        self._registry.append(task)
+        if task.task_id not in self._task_display_order:
+            self._task_display_order.append(task.task_id)
+        self.metrics_tracker.log_start(task.task_id)
+        self.snapshot_manager.capture_snapshot(task)
+
     def run_until_complete(self):
         if not self._registry: return
         self._is_running = True
+        
+        # Windows command prompt setup to enable ANSI escape colors/cursor navigation flags
+        if os.name == 'nt':
+            os.system('')
+
+        # Save the exact base cursor coordinate position before printing anything (\x1b[s)
+        sys.stdout.write("\x1b[s")
+        sys.stdout.flush()
+
+        all_tasks_reference = {t.task_id: t for t in self._registry}
         round_counter = 0
+
         while self._registry:
             self._registry = [t for t in self._registry if not t.is_done and self.breaker.can_execute(t.task_id)]
             nodes = [t for t in self._registry if self.dag_resolver.is_executable(t.task_id)]
             if not self._registry: break
             if not nodes: logger.error("🛑 Deadlock!"); break
+
             for task in nodes:
                 try:
                     self.metrics_tracker.record_tick(task.task_id)
-                    start = time.time(); task.run_slice()
+                    start = time.time()
+                    
+                    # Intercept the target class method printing logic by temporarily swapping stdout strings
+                    original_print = print
+                    def silent_print(*args, **kwargs): pass
+                    import builtins
+                    builtins.print = silent_print
+                    
+                    try:
+                        task.run_slice()
+                    finally:
+                        builtins.print = original_print
+
                     self.throttler.compute_optimal_chunk(task.chunk_size, time.time() - start, task.total_numbers)
-                    if task.is_done: self.metrics_tracker.log_end(task.task_id); self.dag_resolver.mark_completed(task.task_id)
+                    
+                    if task.is_done: 
+                        self.metrics_tracker.log_end(task.task_id)
+                        self.dag_resolver.mark_completed(task.task_id)
                 except Exception:
                     self.snapshot_manager.rollback_task(task); self.breaker.record_failure(task.task_id)
                     if not self.breaker.can_execute(task.task_id): task.is_done = True 
+
+            # Snap cursor back to the exact saved baseline layout start point (\x1b[u)
+            sys.stdout.write("\x1b[u")
+
+            # Rewrite each line context dynamically
+            for tid in self._task_display_order:
+                t_obj = all_tasks_reference[tid]
+                progress = (t_obj.current_index / t_obj.total_numbers) * 100
+                
+                # Clear entire line to the right (\x1b[K)
+                sys.stdout.write("\x1b[K")
+                
+                if t_obj.is_done:
+                    m_data = self.metrics_tracker.history.get(tid, {})
+                    duration = (m_data["end"] - m_data["start"]) if m_data.get("end") else 0.0
+                    sys.stdout.write(f"Task {tid}: 100.00% complete... 🎉 FINISHED! (Duration: {duration:.3f}s)\n")
+                else:
+                    sys.stdout.write(f"Task {tid}: {progress:.2f}% complete...\n")
+                    
+            sys.stdout.flush()
+            time.sleep(0.01) # Small throttle delay to make smooth visual ticks
             round_counter += 1
             if round_counter % 5 == 0: gc.collect()
-        self._is_running = False; self.metrics_tracker.print_report()
+
+        self._is_running = False
+        self.metrics_tracker.print_report()
 
 def get_running_loop():
     global _global_loop_instance
@@ -287,6 +344,9 @@ def _run_terminal_command():
             elif flags[i] == "--size" and i + 1 < len(flags): cfg["size"] = int(flags[i+1])
             elif flags[i] == "--chunk" and i + 1 < len(flags): cfg["chunk"] = int(flags[i+1])
     except Exception: return
-    setup.init(); loop = get_running_loop(); pool = create_worker_pool("CLI", cfg["tasks"], cfg["size"])
-    for t in pool: t.chunk_size = cfg["chunk"]; loop.add_task(t)
+    setup.init(); loop = get_running_loop()
+    pool = create_worker_pool("CLI", cfg["tasks"], cfg["size"])
+    for t in pool: 
+        t.chunk_size = cfg["chunk"]
+        loop.add_task(t)
     loop.run_until_complete()
