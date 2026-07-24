@@ -215,6 +215,7 @@ class TaskLoop:
         self.metrics_tracker, self.breaker, self.throttler = TaskMetricsCollector(), CircuitBreaker(), DynamicWorkThrottler()
         self.dag_resolver, self.snapshot_manager = TaskDependencyResolver(), StateSnapshotter()
         self._task_display_order = []
+        self._final_durations = {}
 
     def add_task(self, task, priority=2):
         if not isinstance(task, Asyncenv): raise TypeError("Must inherit from Asyncenv.")
@@ -228,72 +229,70 @@ class TaskLoop:
         if not self._registry: return
         self._is_running = True
         
-        # Windows command prompt setup to enable ANSI escape colors/cursor navigation flags
         if os.name == 'nt':
             os.system('')
 
-        # Save the exact base cursor coordinate position before printing anything (\x1b[s)
-        sys.stdout.write("\x1b[s")
-        sys.stdout.flush()
-
         all_tasks_reference = {t.task_id: t for t in self._registry}
         round_counter = 0
+
+        sys.stdout.write("Initializing Cooperative Task Loop Engine Process Monitors...\n")
+        sys.stdout.flush()
+
+        # Intercept stdout globally during active compute loops to swallow internal sub-class print statements
+        original_stdout = sys.stdout
+        class FrameBufferSwallower:
+            def write(self, s): pass
+            def flush(self): pass
 
         while self._registry:
             self._registry = [t for t in self._registry if not t.is_done and self.breaker.can_execute(t.task_id)]
             nodes = [t for t in self._registry if self.dag_resolver.is_executable(t.task_id)]
             if not self._registry: break
-            if not nodes: logger.error("🛑 Deadlock!"); break
+            if not nodes: 
+                sys.stdout = original_stdout
+                logger.error("🛑 Deadlock!"); break
 
+            # Redirect output during task slice calculations to block print cascades
+            sys.stdout = FrameBufferSwallower()
             for task in nodes:
                 try:
                     self.metrics_tracker.record_tick(task.task_id)
                     start = time.time()
-                    
-                    # Intercept the target class method printing logic by temporarily swapping stdout strings
-                    original_print = print
-                    def silent_print(*args, **kwargs): pass
-                    import builtins
-                    builtins.print = silent_print
-                    
-                    try:
-                        task.run_slice()
-                    finally:
-                        builtins.print = original_print
-
+                    task.run_slice()
                     self.throttler.compute_optimal_chunk(task.chunk_size, time.time() - start, task.total_numbers)
-                    
                     if task.is_done: 
                         self.metrics_tracker.log_end(task.task_id)
+                        m_data = self.metrics_tracker.history.get(task.task_id, {})
+                        self._final_durations[task.task_id] = (m_data["end"] - m_data["start"]) if m_data.get("end") else 0.0
                         self.dag_resolver.mark_completed(task.task_id)
                 except Exception:
                     self.snapshot_manager.rollback_task(task); self.breaker.record_failure(task.task_id)
                     if not self.breaker.can_execute(task.task_id): task.is_done = True 
 
-            # Snap cursor back to the exact saved baseline layout start point (\x1b[u)
-            sys.stdout.write("\x1b[u")
+            # Restore original console stdout to redraw matrix dashboard layout
+            sys.stdout = original_stdout
 
-            # Rewrite each line context dynamically
+            frame_segments = []
             for tid in self._task_display_order:
                 t_obj = all_tasks_reference[tid]
-                progress = (t_obj.current_index / t_obj.total_numbers) * 100
-                
-                # Clear entire line to the right (\x1b[K)
-                sys.stdout.write("\x1b[K")
-                
                 if t_obj.is_done:
-                    m_data = self.metrics_tracker.history.get(tid, {})
-                    duration = (m_data["end"] - m_data["start"]) if m_data.get("end") else 0.0
-                    sys.stdout.write(f"Task {tid}: 100.00% complete... 🎉 FINISHED! (Duration: {duration:.3f}s)\n")
+                    dur = self._final_durations.get(tid, 0.0)
+                    frame_segments.append(f"[{tid}: 100% 🎉 FINISHED ({dur:.3f}s)]")
                 else:
-                    sys.stdout.write(f"Task {tid}: {progress:.2f}% complete...\n")
-                    
+                    progress = (t_obj.current_index / t_obj.total_numbers) * 100
+                    frame_segments.append(f"[{tid}: {progress:.2f}%]")
+            
+            # Rewrite entire single horizontal line row matrix tracking context dynamically
+            sys.stdout.write("\r\x1b[K" + "  |  ".join(frame_segments))
             sys.stdout.flush()
-            time.sleep(0.01) # Small throttle delay to make smooth visual ticks
+            
+            time.sleep(0.02)
             round_counter += 1
             if round_counter % 5 == 0: gc.collect()
 
-        self._is_running = False
+        # Restore original system console streams safely on exit
+        sys.stdout = original_stdout
+        sys.stdout.write("\n")
         self.metrics_tracker.print_report()
 
 def get_running_loop():
@@ -331,12 +330,12 @@ class setup:
         return _hardware_core_count
 
 def _show_terminal_help():
-    print(f"\nasyncenv CLI — v3.3.4\nUsage: python -m asyncenv [options]\n\nOptions:\n  --help, -h       Help text\n  --version, -v    Version text\n  --tasks [num]    Task count\n  --size [num]     Work size\n  --chunk [num]    Chunk size")
+    print(f"\nasyncenv CLI — v3.3.7\nUsage: python -m asyncenv [options]\n\nOptions:\n  --help, -h       Help text\n  --version, -v    Version text\n  --tasks [num]    Task count\n  --size [num]     Work size\n  --chunk [num]    Chunk size")
 
 def _run_terminal_command():
     flags = sys.argv[1:]
     if not flags or "-h" in flags or "--help" in flags: _show_terminal_help(); return
-    if "-v" in flags or "--version" in flags: print("asyncenv package: v3.3.4"); return
+    if "-v" in flags or "--version" in flags: print("asyncenv package: v3.3.7"); return
     cfg = {"tasks": 2, "size": 1000000, "chunk": 500000}
     try:
         for i in range(len(flags)):
