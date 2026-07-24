@@ -2,7 +2,7 @@ from setuptools import setup, find_packages
 
 setup(
     name="asyncenv",
-    version="3.3.5",
+    version="3.3.6",
     author="Enterprise Engineering Group",
     description="Cooperative Task Slicing Architecture for Micro-Runtimes.",
     packages=find_packages(),
