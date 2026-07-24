@@ -235,10 +235,10 @@ class TaskLoop:
         all_tasks_reference = {t.task_id: t for t in self._registry}
         round_counter = 0
 
-        sys.stdout.write("Initializing Cooperative Task Loop Engine Process Monitors...\n")
+        # \x1b[7l - Force turns off terminal automatic line wrapping configurations globally
+        sys.stdout.write("\x1b[7lInitializing Cooperative Task Loop Engine Process Monitors...\n")
         sys.stdout.flush()
 
-        # Intercept stdout globally during active compute loops to swallow internal sub-class print statements
         original_stdout = sys.stdout
         class FrameBufferSwallower:
             def write(self, s): pass
@@ -252,7 +252,6 @@ class TaskLoop:
                 sys.stdout = original_stdout
                 logger.error("🛑 Deadlock!"); break
 
-            # Redirect output during task slice calculations to block print cascades
             sys.stdout = FrameBufferSwallower()
             for task in nodes:
                 try:
@@ -269,7 +268,6 @@ class TaskLoop:
                     self.snapshot_manager.rollback_task(task); self.breaker.record_failure(task.task_id)
                     if not self.breaker.can_execute(task.task_id): task.is_done = True 
 
-            # Restore original console stdout to redraw matrix dashboard layout
             sys.stdout = original_stdout
 
             frame_segments = []
@@ -282,17 +280,28 @@ class TaskLoop:
                     progress = (t_obj.current_index / t_obj.total_numbers) * 100
                     frame_segments.append(f"[{tid}: {progress:.2f}%]")
             
-            # Rewrite entire single horizontal line row matrix tracking context dynamically
-            sys.stdout.write("\r\x1b[K" + "  |  ".join(frame_segments))
+            # Extract current console grid character limit constraints to handle clipping barriers dynamically
+            try:
+                terminal_width = os.get_terminal_size().columns
+            except Exception:
+                terminal_width = 120
+
+            full_line_str = "  |  ".join(frame_segments)
+            
+            # Trim the display payload if it pushes beyond available horizontal screen space boundaries
+            if len(full_line_str) > (terminal_width - 1):
+                full_line_str = full_line_str[:terminal_width - 4] + "..."
+
+            sys.stdout.write("\r\x1b[K" + full_line_str)
             sys.stdout.flush()
             
             time.sleep(0.02)
             round_counter += 1
             if round_counter % 5 == 0: gc.collect()
 
-        # Restore original system console streams safely on exit
         sys.stdout = original_stdout
-        sys.stdout.write("\n")
+        # \x1b[7h - Safe reset choice to restore native default line wrapping parameters on engine exit
+        sys.stdout.write("\x1b[7h\n")
         self.metrics_tracker.print_report()
 
 def get_running_loop():
@@ -330,12 +339,12 @@ class setup:
         return _hardware_core_count
 
 def _show_terminal_help():
-    print(f"\nasyncenv CLI — v3.3.7\nUsage: python -m asyncenv [options]\n\nOptions:\n  --help, -h       Help text\n  --version, -v    Version text\n  --tasks [num]    Task count\n  --size [num]     Work size\n  --chunk [num]    Chunk size")
+    print(f"\nasyncenv CLI — v3.3.8\nUsage: python -m asyncenv [options]\n\nOptions:\n  --help, -h       Help text\n  --version, -v    Version text\n  --tasks [num]    Task count\n  --size [num]     Work size\n  --chunk [num]    Chunk size")
 
 def _run_terminal_command():
     flags = sys.argv[1:]
     if not flags or "-h" in flags or "--help" in flags: _show_terminal_help(); return
-    if "-v" in flags or "--version" in flags: print("asyncenv package: v3.3.7"); return
+    if "-v" in flags or "--version" in flags: print("asyncenv package: v3.3.8"); return
     cfg = {"tasks": 2, "size": 1000000, "chunk": 500000}
     try:
         for i in range(len(flags)):
